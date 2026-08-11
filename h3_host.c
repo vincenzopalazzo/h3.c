@@ -1,6 +1,8 @@
 #include "h3_host.h"
 
+#if !defined(H3_PORTABLE_RESIZE)
 #include <Accelerate/Accelerate.h>
+#endif
 
 #include <float.h>
 #include <limits.h>
@@ -527,6 +529,9 @@ void h3_rng_fill_normal(h3_rng *rng, float *values, size_t count) {
     }
 }
 
+#if defined(H3_PORTABLE_RESIZE)
+/* Portable implementation lives in h3_host_resize_portable.c */
+#else
 int h3_resize_rgb24_high_quality(const uint8_t *input, int frames,
                                  int input_width, int input_height,
                                  int output_width, int output_height,
@@ -597,6 +602,8 @@ int h3_resize_rgb24_high_quality(const uint8_t *input, int frames,
     *output = pixels;
     return 1;
 }
+#endif
+
 
 static double h3_phi1(double value) {
     return expm1(value) / value;

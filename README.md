@@ -809,3 +809,25 @@ at every size for A/B comparison.
 The native baseline targets the original `FL2VA/` and `Ref2VA/` checkpoint
 trees. Model phases are loaded and released separately so the 33B transformer,
 Qwen encoder, and decoders never have to coexist in unified memory.
+
+
+## NVIDIA CUDA / DGX Spark (experimental fork)
+
+This fork adds a Linux CUDA backend aimed at NVIDIA DGX Spark (GB10, `sm_121`).
+
+```sh
+# on the Spark (after installing deps)
+sudo apt install -y libicu-dev ffmpeg pkg-config
+make cuda-spark -j$(nproc)
+./h3-cuda --info -d ./MiniMax-H3
+```
+
+Notes:
+
+- Metal remains the default macOS path (`make`).
+- CUDA backend file: `h3_gpu_cuda.cu`.
+- Portable tokenizer: `h3_tokenizer_icu.c` (public ICU).
+- Portable resize: `h3_host_resize_portable.c`.
+- Many advanced GPU ops still stubbed; bring-up order follows
+  `docs/20-h3-cuda-spark-port-plan.md` in the local.ai repo.
+- Do not stack H3 with a resident 90GB+ LLM on one 128 GB Spark.

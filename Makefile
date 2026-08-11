@@ -213,3 +213,51 @@ clean:
 		h3_real_video_vae_test h3_semantic_vae_test \
 	h3_dit_bench h3_dit_bench_864 \
 	libh3.a *.o *.d tests/*.o tests/*.d
+	$(MAKE) clean-cuda
+
+
+# ---------------------------------------------------------------------------
+# CUDA / DGX Spark (Linux) backend
+# ---------------------------------------------------------------------------
+CUDA_HOME ?= /usr/local/cuda
+CUDA_ARCH ?= sm_121
+NVCC ?= $(CUDA_HOME)/bin/nvcc
+ICU_CFLAGS ?= $(shell pkg-config --cflags icu-uc icu-i18n 2>/dev/null)
+ICU_LIBS ?= $(shell pkg-config --libs icu-uc icu-i18n 2>/dev/null)
+ifeq ($(ICU_LIBS),)
+  ICU_LIBS = -licuuc -licui18n -licudata
+endif
+
+CUDA_CPPFLAGS := -I$(CUDA_HOME)/include -DH3_PORTABLE_RESIZE=1
+CUDA_CFLAGS := -O3 -std=c11 -Wall -Wextra -Wno-unused-parameter $(ICU_CFLAGS)
+CUDA_NVCCFLAGS := -O3 -std=c++17 -arch=$(CUDA_ARCH) -Xcompiler -fPIC
+CUDA_LDFLAGS := -L$(CUDA_HOME)/lib64 -lcudart -lcublas -lcublasLt -lpthread -lm $(ICU_LIBS)
+
+CUDA_LIB_C := h3.c h3_host.c h3_host_resize_portable.c h3_safetensors.c h3_weights.c \
+	h3_text_encoder.c h3_vision_encoder.c h3_dit.c h3_dit_schedule.c \
+	h3_video_vae.c h3_audio_vae.c h3_video_encoder.c h3_multimodal.c \
+	h3_ffmpeg.c h3_cli.c h3_terminal.c linenoise.c h3_tokenizer_icu.c
+CUDA_LIB_OBJ := $(CUDA_LIB_C:.c=.cuda.o) h3_gpu_cuda.o
+
+%.cuda.o: %.c
+	$(CC) $(CUDA_CPPFLAGS) $(CUDA_CFLAGS) -c $< -o $@
+
+h3_gpu_cuda.o: h3_gpu_cuda.cu h3_gpu.h
+	$(NVCC) $(CUDA_CPPFLAGS) $(CUDA_NVCCFLAGS) -c h3_gpu_cuda.cu -o $@
+
+h3-cuda: $(CUDA_LIB_OBJ) main.c
+	$(CXX) $(CUDA_CPPFLAGS) $(CUDA_CFLAGS) main.c $(CUDA_LIB_OBJ) -o $@ $(CUDA_LDFLAGS)
+
+cuda-spark:
+	$(MAKE) h3-cuda CUDA_ARCH=sm_121
+
+cuda-generic:
+	$(MAKE) h3-cuda CUDA_ARCH=native
+
+# Minimal smoke binary: create GPU + print device
+h3-cuda-smoke: h3_gpu_cuda.o tests/cuda_smoke.c
+	@mkdir -p tests
+	$(NVCC) $(CUDA_CPPFLAGS) $(CUDA_NVCCFLAGS) tests/cuda_smoke.c h3_gpu_cuda.o -o $@ $(CUDA_LDFLAGS)
+
+clean-cuda:
+	rm -f $(CUDA_LIB_OBJ) h3-cuda h3-cuda-smoke *.cuda.o h3_gpu_cuda.o
