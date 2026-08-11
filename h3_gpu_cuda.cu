@@ -52,6 +52,7 @@ __global__ void h3_k_euler_bf16(float *sample,const __nv_bfloat16 *last,const __
 __global__ void h3_k_bias_add_f32(float *out,const float *bias,uint32_t rows,uint32_t cols){ size_t i=blockIdx.x*blockDim.x+threadIdx.x; size_t n=(size_t)rows*cols; if(i<n) out[i]+=bias[i%cols]; }
 __global__ void h3_k_bias_add_bf16(__nv_bfloat16 *out,const __nv_bfloat16 *bias,uint32_t rows,uint32_t cols){ size_t i=blockIdx.x*blockDim.x+threadIdx.x; size_t n=(size_t)rows*cols; if(i<n) out[i]=__float2bfloat16(__bfloat162float(out[i])+__bfloat162float(bias[i%cols])); }
 
+extern "C" {
 h3_gpu * h3_gpu_create(const char *shader_source_path, char *error, size_t error_size)
 {
     (void)shader_source_path;
@@ -198,7 +199,7 @@ int h3_gpu_tensor_write_bf16_range(h3_gpu_tensor *tensor, size_t destination_off
 
 int h3_gpu_begin(h3_gpu *gpu)
 {
-    if(!gpu) return -1; gpu->has_error=0; gpu->error[0]=0; //; return 0;
+    if (!gpu) return -1; gpu->has_error = 0; gpu->error[0] = 0; return 0;
 }
 
 int h3_gpu_continue(h3_gpu *gpu)
@@ -692,3 +693,5 @@ int h3_gpu_silu_mul_bf16(h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor
     if(!gpu||!output||!gate||!up) return -1; h3_k_swiglu_bf16<<<h3_blocks(elements),256,0,gpu->stream>>>((__nv_bfloat16*)output->device,(const __nv_bfloat16*)gate->device,(const __nv_bfloat16*)up->device,elements); gpu->stats.direct_dispatches++; return h3_cuda_ok(gpu,cudaGetLastError(),"h3_gpu_silu_mul_bf16")?0:-1;
 }
 
+
+} /* extern C */
