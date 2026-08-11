@@ -52,7 +52,6 @@ __global__ void h3_k_euler_bf16(float *sample,const __nv_bfloat16 *last,const __
 __global__ void h3_k_bias_add_f32(float *out,const float *bias,uint32_t rows,uint32_t cols){ size_t i=blockIdx.x*blockDim.x+threadIdx.x; size_t n=(size_t)rows*cols; if(i<n) out[i]+=bias[i%cols]; }
 __global__ void h3_k_bias_add_bf16(__nv_bfloat16 *out,const __nv_bfloat16 *bias,uint32_t rows,uint32_t cols){ size_t i=blockIdx.x*blockDim.x+threadIdx.x; size_t n=(size_t)rows*cols; if(i<n) out[i]=__float2bfloat16(__bfloat162float(out[i])+__bfloat162float(bias[i%cols])); }
 
-extern "C" {
 h3_gpu * h3_gpu_create(const char *shader_source_path, char *error, size_t error_size)
 {
     (void)shader_source_path;
@@ -694,4 +693,3 @@ int h3_gpu_silu_mul_bf16(h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor
 }
 
 
-} /* extern C */
