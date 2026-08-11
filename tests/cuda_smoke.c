@@ -12,7 +12,7 @@ int main(void)
         return 1;
     }
     int dev = 0;
-    cudaDeviceProp prop;
+    struct cudaDeviceProp prop;
     cudaGetDevice(&dev);
     cudaGetDeviceProperties(&prop, dev);
     printf("h3 CUDA backend ok\n");

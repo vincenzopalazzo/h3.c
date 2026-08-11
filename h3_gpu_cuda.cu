@@ -55,7 +55,7 @@ __global__ void h3_k_bias_add_bf16(__nv_bfloat16 *out,const __nv_bfloat16 *bias,
 h3_gpu * h3_gpu_create(const char *shader_source_path, char *error, size_t error_size)
 {
     (void)shader_source_path;
-    if (error && error_size) error[0]=' ';
+    if (error && error_size) error[0]=0; //;
     h3_gpu *gpu=(h3_gpu*)calloc(1,sizeof(*gpu));
     if(!gpu){ if(error&&error_size) snprintf(error,error_size,"oom"); return NULL; }
     int ndev=0; if(cudaGetDeviceCount(&ndev)!=cudaSuccess||ndev<=0){ if(error&&error_size) snprintf(error,error_size,"no CUDA devices"); free(gpu); return NULL; }
@@ -132,7 +132,7 @@ h3_gpu_tensor * h3_gpu_tensor_load_f32(h3_gpu *gpu, const char *path, uint64_t f
 int h3_gpu_tensor_read_file_bf16(h3_gpu_tensor *tensor, const char *path, uint64_t file_offset, size_t elements, char *error, size_t error_size)
 {
     if(!tensor||!path||tensor->dtype!=H3_GPU_BF16||elements>tensor->elements) return -1;
-    if(error&&error_size) error[0]=' ';
+    if(error&&error_size) error[0]=0; //;
     h3_gpu *g=tensor->gpu; FILE *f=fopen(path,"rb");
     if(!f){ if(error&&error_size) snprintf(error,error_size,"open %s: %s",path,strerror(errno)); if(g) h3_set_error(g,"open %s: %s",path,strerror(errno)); return -1; }
     if(fseeko(f,(off_t)file_offset,SEEK_SET)!=0){ fclose(f); return -1; }
@@ -198,7 +198,7 @@ int h3_gpu_tensor_write_bf16_range(h3_gpu_tensor *tensor, size_t destination_off
 
 int h3_gpu_begin(h3_gpu *gpu)
 {
-    if(!gpu) return -1; gpu->has_error=0; gpu->error[0]=' '; return 0;
+    if(!gpu) return -1; gpu->has_error=0; gpu->error[0]=0; //; return 0;
 }
 
 int h3_gpu_continue(h3_gpu *gpu)
