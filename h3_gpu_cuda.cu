@@ -40,6 +40,10 @@ __global__ void h3_k_swiglu_fused_bf16(__nv_bfloat16 *out,const __nv_bfloat16 *f
 }
 __global__ void h3_k_swiglu_bf16(__nv_bfloat16 *out,const __nv_bfloat16 *gate,const __nv_bfloat16 *up,size_t n){ size_t i=blockIdx.x*blockDim.x+threadIdx.x; if(i<n){ float g=__bfloat162float(gate[i]); float u=__bfloat162float(up[i]); out[i]=__float2bfloat16((g/(1.f+expf(-g)))*u);} }
 __global__ void h3_k_clip_f32(float *out,const float *in,float lo,float hi,size_t n){ size_t i=blockIdx.x*blockDim.x+threadIdx.x; if(i<n){ float x=in[i]; out[i]=fminf(hi,fmaxf(lo,x)); } }
+__global__ void h3_k_scale_add_tensor_f32(float *out,const float *residual,const float *branch,const float *scale,uint32_t rows,uint32_t width){
+ size_t i=blockIdx.x*blockDim.x+threadIdx.x; size_t n=(size_t)rows*width; if(i>=n) return;
+ size_t col=i%width; float s=scale?scale[col]:1.f; out[i]=residual[i]+s*branch[i];
+}
 __global__ void h3_k_scale_add_f32(float *out,const float *a,const float *b,float alpha,float beta,size_t n){ size_t i=blockIdx.x*blockDim.x+threadIdx.x; if(i<n) out[i]=alpha*a[i]+beta*b[i]; }
 __global__ void h3_k_add_scaled_f32(float *out,const float *a,const float *b,float sa,float sb,size_t n){ size_t i=blockIdx.x*blockDim.x+threadIdx.x; if(i<n) out[i]=sa*a[i]+sb*b[i]; }
 __global__ void h3_k_rms_norm_f32(float *out,const float *in,const float *w,uint32_t rows,uint32_t width,float eps){ uint32_t row=blockIdx.x; if(row>=rows) return; const float *x=in+(size_t)row*width; float *y=out+(size_t)row*width; float ms=0.f; for(uint32_t i=threadIdx.x;i<width;i+=blockDim.x) ms+=x[i]*x[i]; __shared__ float red[256]; red[threadIdx.x]=ms; __syncthreads(); for(int s=blockDim.x/2;s>0;s>>=1){ if((int)threadIdx.x<s) red[threadIdx.x]+=red[threadIdx.x+s]; __syncthreads(); } float inv=rsqrtf(red[0]/(float)width+eps); for(uint32_t i=threadIdx.x;i<width;i+=blockDim.x){ float ww=w?w[i]:1.f; y[i]=x[i]*inv*ww; } }
@@ -229,8 +233,23 @@ void h3_gpu_profile_mark(h3_gpu *gpu, const char *phase)
 
 int h3_gpu_linear_f32(h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *input, const h3_gpu_tensor *weight, const h3_gpu_tensor *bias, uint32_t rows, uint32_t input_dim, uint32_t output_dim)
 {
-    if(!gpu||!output||!input||!weight) return -1; uint32_t rows=rows,in_f=input_dim,out_f=output_dim; const float alpha=1.f,beta=0.f; cublasStatus_t st=cublasSgemm(gpu->cublas,CUBLAS_OP_N,CUBLAS_OP_N,(int)out_f,(int)rows,(int)in_f,&alpha,(const float*)weight->device,(int)out_f,(const float*)input->device,(int)in_f,&beta,(float*)output->device,(int)out_f); if(!h3_cublas_ok(gpu,st,"linear_f32")) return -1; if(bias){ h3_k_bias_add_f32<<<h3_blocks((size_t)rows*out_f),256,0,gpu->stream>>>((float*)output->device,(const float*)bias->device,rows,out_f); if(!h3_cuda_ok(gpu,cudaGetLastError(),"bias")) return -1; } gpu->stats.mps_linear_dispatches++; return 0;
+    if (!gpu || !output || !input || !weight) return -1;
+    const float alpha = 1.f, beta = 0.f;
+    cublasStatus_t st = cublasSgemm(gpu->cublas, CUBLAS_OP_N, CUBLAS_OP_N,
+        (int)output_dim, (int)rows, (int)input_dim, &alpha,
+        (const float *)weight->device, (int)output_dim,
+        (const float *)input->device, (int)input_dim,
+        &beta, (float *)output->device, (int)output_dim);
+    if (!h3_cublas_ok(gpu, st, "linear_f32")) return -1;
+    if (bias) {
+        h3_k_bias_add_f32<<<h3_blocks((size_t)rows * output_dim), 256, 0, gpu->stream>>>(
+            (float *)output->device, (const float *)bias->device, rows, output_dim);
+        if (!h3_cuda_ok(gpu, cudaGetLastError(), "linear_f32 bias")) return -1;
+    }
+    gpu->stats.mps_linear_dispatches++;
+    return 0;
 }
+
 
 int h3_gpu_patch_linear_bf16(h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *input, const h3_gpu_tensor *weight, const h3_gpu_tensor *bias, uint32_t rows, uint32_t input_dim, uint32_t output_dim)
 {
@@ -308,15 +327,23 @@ int h3_gpu_swiglu_f32(h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *f
 {
     if (!gpu || !output || !fused) return -1;
     size_t n = (size_t)rows * (size_t)width;
-    h3_k_swiglu_fused_f32<<<h3_blocks(n),256,0,gpu->stream>>>((float*)output->device,(const float*)fused->device,rows,width);
+    h3_k_swiglu_fused_f32<<<h3_blocks(n), 256, 0, gpu->stream>>>((float *)output->device, (const float *)fused->device, rows, width);
     gpu->stats.direct_dispatches++;
     return h3_cuda_ok(gpu, cudaGetLastError(), "swiglu_f32") ? 0 : -1;
 }
 
+
 int h3_gpu_scale_add_f32(h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *residual, const h3_gpu_tensor *branch, const h3_gpu_tensor *scale, uint32_t rows, uint32_t width)
 {
-    if(!gpu||!output||!residual||!branch) return -1; h3_k_scale_add_f32<<<h3_blocks(width),256,0,gpu->stream>>>((float*)output->device,(const float*)residual->device,(const float*)branch->device,scale,rows,width); gpu->stats.direct_dispatches++; return h3_cuda_ok(gpu,cudaGetLastError(),"scale_add_f32")?0:-1;
+    if (!gpu || !output || !residual || !branch) return -1;
+    size_t n = (size_t)rows * (size_t)width;
+    h3_k_scale_add_tensor_f32<<<h3_blocks(n), 256, 0, gpu->stream>>>(
+        (float *)output->device, (const float *)residual->device, (const float *)branch->device,
+        scale ? (const float *)scale->device : nullptr, rows, width);
+    gpu->stats.direct_dispatches++;
+    return h3_cuda_ok(gpu, cudaGetLastError(), "scale_add_f32") ? 0 : -1;
 }
+
 
 int h3_gpu_layer_norm_f32(h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *input, const h3_gpu_tensor *weight, const h3_gpu_tensor *bias, uint32_t rows, uint32_t width, float epsilon)
 {
@@ -420,8 +447,24 @@ int h3_gpu_vae_encoder_group_norm_silu_f32(h3_gpu *gpu, h3_gpu_tensor *output, c
 
 int h3_gpu_linear_bf16(h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *input, const h3_gpu_tensor *weight, const h3_gpu_tensor *bias, uint32_t rows, uint32_t input_dim, uint32_t output_dim)
 {
-    if(!gpu||!output||!input||!weight) return -1; uint32_t rows=rows,in_f=input_dim,out_f=output_dim; const float alpha=1.f,beta=0.f; cublasStatus_t st=cublasGemmEx(gpu->cublas,CUBLAS_OP_N,CUBLAS_OP_N,(int)out_f,(int)rows,(int)in_f,&alpha,weight->device,CUDA_R_16BF,(int)out_f,input->device,CUDA_R_16BF,(int)in_f,&beta,output->device,CUDA_R_16BF,(int)out_f,CUBLAS_COMPUTE_32F,CUBLAS_GEMM_DEFAULT_TENSOR_OP); if(!h3_cublas_ok(gpu,st,"linear_bf16")) return -1; if(bias){ h3_k_bias_add_bf16<<<h3_blocks((size_t)rows*out_f),256,0,gpu->stream>>>((__nv_bfloat16*)output->device,(const __nv_bfloat16*)bias->device,rows,out_f); if(!h3_cuda_ok(gpu,cudaGetLastError(),"bias")) return -1; } gpu->stats.mps_linear_dispatches++; return 0;
+    if (!gpu || !output || !input || !weight) return -1;
+    const float alpha = 1.f, beta = 0.f;
+    cublasStatus_t st = cublasGemmEx(gpu->cublas, CUBLAS_OP_N, CUBLAS_OP_N,
+        (int)output_dim, (int)rows, (int)input_dim, &alpha,
+        weight->device, CUDA_R_16BF, (int)output_dim,
+        input->device, CUDA_R_16BF, (int)input_dim,
+        &beta, output->device, CUDA_R_16BF, (int)output_dim,
+        CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+    if (!h3_cublas_ok(gpu, st, "linear_bf16")) return -1;
+    if (bias) {
+        h3_k_bias_add_bf16<<<h3_blocks((size_t)rows * output_dim), 256, 0, gpu->stream>>>(
+            (__nv_bfloat16 *)output->device, (const __nv_bfloat16 *)bias->device, rows, output_dim);
+        if (!h3_cuda_ok(gpu, cudaGetLastError(), "linear_bf16 bias")) return -1;
+    }
+    gpu->stats.mps_linear_dispatches++;
+    return 0;
 }
+
 
 int h3_gpu_mlp_bf16(h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *input, const h3_gpu_tensor *fc1_weight, const h3_gpu_tensor *fc2_weight, uint32_t rows, uint32_t input_dim, uint32_t hidden_dim, uint32_t output_dim)
 {
@@ -562,10 +605,11 @@ int h3_gpu_swiglu_bf16(h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *
 {
     if (!gpu || !output || !fused) return -1;
     size_t n = (size_t)rows * (size_t)width;
-    h3_k_swiglu_fused_bf16<<<h3_blocks(n),256,0,gpu->stream>>>((__nv_bfloat16*)output->device,(const __nv_bfloat16*)fused->device,rows,width);
+    h3_k_swiglu_fused_bf16<<<h3_blocks(n), 256, 0, gpu->stream>>>((__nv_bfloat16 *)output->device, (const __nv_bfloat16 *)fused->device, rows, width);
     gpu->stats.direct_dispatches++;
     return h3_cuda_ok(gpu, cudaGetLastError(), "swiglu_bf16") ? 0 : -1;
 }
+
 
 int h3_gpu_embedding_bf16(h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *weight, const h3_gpu_tensor *token_ids, uint32_t tokens, uint32_t vocab_size, uint32_t width)
 {
@@ -634,13 +678,14 @@ int h3_gpu_token_expand_adaln_bf16(h3_gpu *gpu, h3_gpu_tensor *residual, h3_gpu_
 int h3_gpu_euler_bf16(h3_gpu *gpu, h3_gpu_tensor *sample, size_t sample_offset, const h3_gpu_tensor *last, const h3_gpu_tensor *previous, uint32_t elements, float delta, float ratio)
 {
     if (!gpu || !sample || !last) return -1;
-    float *sample_ptr = (float*)sample->device + sample_offset;
-    const __nv_bfloat16 *last_ptr = (const __nv_bfloat16*)last->device;
-    const __nv_bfloat16 *prev_ptr = previous ? (const __nv_bfloat16*)previous->device : nullptr;
-    h3_k_euler_bf16<<<h3_blocks(elements),256,0,gpu->stream>>>(sample_ptr, last_ptr, prev_ptr, elements, delta, ratio);
+    float *sample_ptr = (float *)sample->device + sample_offset;
+    const __nv_bfloat16 *last_ptr = (const __nv_bfloat16 *)last->device;
+    const __nv_bfloat16 *prev_ptr = previous ? (const __nv_bfloat16 *)previous->device : nullptr;
+    h3_k_euler_bf16<<<h3_blocks(elements), 256, 0, gpu->stream>>>(sample_ptr, last_ptr, prev_ptr, elements, delta, ratio);
     gpu->stats.direct_dispatches++;
     return h3_cuda_ok(gpu, cudaGetLastError(), "euler_bf16") ? 0 : -1;
 }
+
 
 int h3_gpu_silu_mul_bf16(h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *gate, const h3_gpu_tensor *up, uint32_t elements)
 {
